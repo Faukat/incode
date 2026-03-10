@@ -1,0 +1,246 @@
+Metadata-Version: 2.4
+Name: repo-code-indexer
+Version: 0.1.0
+Summary: Indexador semântico de código com CLI e MCP
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastmcp>=2.0.0
+Requires-Dist: sentence-transformers>=3.0.0
+Requires-Dist: psycopg[binary]>=3.2.0
+Requires-Dist: pgvector>=0.3.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: python-dotenv>=1.0.1
+
+# Repo Code Indexer
+
+Servico simples para registrar projetos locais, indexa-los e consultar codigo com busca semantica.
+
+Ele foi pensado para um fluxo direto:
+
+- clonar o projeto
+- subir o Postgres com `pgvector`
+- registrar um ou mais repositorios locais
+- indexar quando quiser
+- consultar semanticamente via CLI ou MCP
+
+## Requisitos
+
+- Python 3.11+
+- `uv`
+- Docker e Docker Compose
+- um Postgres com `pgvector` usando o `docker-compose.yml` do projeto
+
+## Instalacao rapida
+
+```bash
+git clone <seu-repo>
+cd repo-code-indexer
+uv sync
+cp .env.example .env
+docker compose up -d postgres
+uv run repo-indexer setup
+```
+
+## Configuracao
+
+As variaveis principais ficam no `.env`:
+
+```env
+REPO_INDEXER_ROOT=/workspace
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=code_indexer
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+CHUNK_MAX_CHARS=1600
+CHUNK_OVERLAP=200
+QUERY_LIMIT=5
+QUERY_MIN_SCORE=0.10
+QUERY_FALLBACK_MIN_SCORE=0.03
+QUERY_CANDIDATE_MULTIPLIER=5
+LEXICAL_DB_SCORE_WEIGHT=0.25
+RESULT_PREVIEW_CHARS=2000
+```
+
+### O que cada variavel controla
+
+- `REPO_INDEXER_ROOT`: raiz padrao para descobrir projetos e resolver caminhos relativos
+- `EMBEDDING_MODEL`: modelo de embeddings local
+- `CHUNK_MAX_CHARS`: tamanho maximo de cada chunk
+- `CHUNK_OVERLAP`: sobreposicao entre chunks
+- `QUERY_LIMIT`: quantidade padrao de resultados na busca
+- `QUERY_MIN_SCORE`: score minimo para um resultado ser exibido
+- `QUERY_FALLBACK_MIN_SCORE`: limiar secundario para fallback quando nada passa no filtro principal
+- `QUERY_CANDIDATE_MULTIPLIER`: quantidade de candidatos semanticos usados antes do reranking
+- `LEXICAL_DB_SCORE_WEIGHT`: peso da busca textual do Postgres no score final
+- `RESULT_PREVIEW_CHARS`: tamanho maximo exibido por resultado na CLI
+
+## Fluxo recomendado
+
+### 1. Ver a configuracao atual
+
+```bash
+uv run repo-indexer config
+```
+
+### 2. Registrar um projeto manualmente
+
+Se o caminho for absoluto:
+
+```bash
+uv run repo-indexer add-project projeto-a /workspace/projeto-a
+```
+
+Se o projeto estiver abaixo de `REPO_INDEXER_ROOT`, basta usar o nome:
+
+```bash
+uv run repo-indexer add-project projeto-a
+```
+
+### 3. Descobrir projetos em lote
+
+Listar diretorios disponiveis na raiz:
+
+```bash
+uv run repo-indexer discover
+```
+
+Registrar todos de uma vez:
+
+```bash
+uv run repo-indexer discover --register
+```
+
+### 4. Ver projetos registrados
+
+```bash
+uv run repo-indexer projects
+```
+
+### 5. Indexar
+
+Indexar um projeto:
+
+```bash
+uv run repo-indexer index projeto-a
+```
+
+Indexar todos os projetos registrados:
+
+```bash
+uv run repo-indexer index --all
+```
+
+### 6. Consultar semanticamente
+
+```bash
+uv run repo-indexer query projeto-a "onde fica a autenticacao?"
+```
+
+Se quiser ser mais permissivo ou mais estrito:
+
+```bash
+uv run repo-indexer query projeto-a "como eu me autentico?" --min-score 0.05 --limit 8
+```
+
+### 7. Remover um projeto registrado
+
+Somente do cadastro:
+
+```bash
+uv run repo-indexer remove-project projeto-a
+```
+
+Removendo tambem os chunks indexados:
+
+```bash
+uv run repo-indexer remove-project projeto-a --delete-chunks
+```
+
+## Comandos disponiveis
+
+- `uv run repo-indexer setup`
+- `uv run repo-indexer config`
+- `uv run repo-indexer discover [--root CAMINHO] [--register]`
+- `uv run repo-indexer add-project NOME [CAMINHO]`
+- `uv run repo-indexer remove-project NOME [--delete-chunks]`
+- `uv run repo-indexer projects`
+- `uv run repo-indexer index [NOME] [--all]`
+- `uv run repo-indexer query NOME "texto" [--limit N] [--min-score F]`
+
+## MCP
+
+Rode o servidor MCP:
+
+```bash
+uv run repo-indexer-mcp
+```
+
+Use `examples/mcp-config.json` como base generica no cliente MCP.
+Se estiver usando OpenCode no Windows, pode usar `examples/opencode-mcp-config.json` quase direto, ajustando apenas caminhos e credenciais se necessario.
+
+Tools expostas:
+
+- `setup_service_tool()`
+- `list_projects_tool(root?)`
+- `discover_projects_tool(root?, register?)`
+- `register_project_tool(project_name, project_path?)`
+- `remove_project_tool(project_name, delete_chunks?)`
+- `index_project(project_name)`
+- `search_code_tool(project_name, query, limit?, min_score?)`
+
+Fluxo MCP recomendado:
+
+1. `setup_service_tool`
+2. `register_project_tool` ou `discover_projects_tool(..., register=true)`
+3. `index_project`
+4. `search_code_tool`
+
+## Como o servico funciona
+
+- guarda os projetos referenciados em `registered_projects`
+- guarda os chunks e embeddings em `code_chunks`
+- usa embeddings locais com `sentence-transformers`
+- faz busca hibrida: vetorial via `pgvector` + full-text search do Postgres
+- enriquece cada chunk com caminho, simbolos, linhas e contexto estrutural
+- aplica reranking lexical para favorecer termos presentes em caminho, simbolos e conteudo
+
+## Observacoes
+
+- O projeto ignora diretorios comuns como `.git`, `node_modules`, `.venv`, `dist` e `build`
+- Indexa extensoes comuns de codigo e texto
+- Para Python, tenta quebrar por `class`, `function` e `method`, preservando linhas e simbolos
+- O modelo de embedding agora fica cacheado em memoria por processo
+- O registro dos projetos fica persistido no banco
+
+## Teste ponta a ponta
+
+Com o banco no ar, execute:
+
+```bash
+./scripts/e2e.sh
+```
+
+O script registra o projeto de exemplo em `examples/sample-workspace/projeto-a`, indexa e valida a busca.
+
+Para ajustar o limiar:
+
+```bash
+MIN_SCORE=0.20 ./scripts/e2e.sh
+```
+
+## Rodando com container
+
+Suba o Postgres:
+
+```bash
+docker compose up -d postgres
+```
+
+Rode o teste ponta a ponta no container da aplicacao:
+
+```bash
+docker compose run --rm repo-indexer "./scripts/e2e.sh"
+```

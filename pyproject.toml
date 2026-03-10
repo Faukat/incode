@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo-code-indexer"
+version = "0.1.0"
+description = "Indexador semântico de código com CLI e MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.0.0",
+  "sentence-transformers>=3.0.0",
+  "psycopg[binary]>=3.2.0",
+  "pgvector>=0.3.0",
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+repo-indexer = "repo_code_indexer.cli:app"
+repo-indexer-mcp = "repo_code_indexer.mcp_server:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,3 @@
+[console_scripts]
+repo-indexer = repo_code_indexer.cli:app
+repo-indexer-mcp = repo_code_indexer.mcp_server:run

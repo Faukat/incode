@@ -1,0 +1,805 @@
+Sim. Vou colar o projeto inteiro aqui, arquivo por arquivo.
+
+1) pyproject.toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo-code-indexer"
+version = "0.1.0"
+description = "Indexador semântico de código com CLI e MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2.0.0",
+  "sentence-transformers>=3.0.0",
+  "psycopg[binary]>=3.2.0",
+  "pgvector>=0.3.0",
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+repo-indexer = "repo_code_indexer.cli:app"
+repo-indexer-mcp = "repo_code_indexer.mcp_server:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+2) README.md
+# Repo Code Indexer
+
+Indexador semântico de código que:
+
+- roda na pasta pai dos seus projetos
+- lista os projetos disponíveis
+- permite escolher qual indexar
+- gera embeddings
+- salva tudo em Postgres + pgvector
+- expõe um MCP para consulta semântica
+
+## Requisitos
+
+- Python 3.11+
+- Docker e Docker Compose
+- uma pasta contendo seus projetos, por exemplo:
+
+/workspace
+├── projeto-a
+├── projeto-b
+└── projeto-c
+
+## Instalação
+
+```bash
+uv sync
+Subir banco
+docker compose up -d
+Variáveis de ambiente
+
+Crie um .env:
+
+REPO_INDEXER_ROOT=/workspace
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=code_indexer
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+Uso
+
+Listar projetos:
+
+uv run repo-indexer projects
+
+Escolher interativamente e indexar:
+
+uv run repo-indexer index
+
+Indexar projeto específico:
+
+uv run repo-indexer index projeto-a
+
+Consultar semanticamente:
+
+uv run repo-indexer query projeto-a "onde fica a autenticação?"
+
+Rodar o MCP:
+
+uv run repo-indexer-mcp
+Exemplo de uso no cliente MCP
+
+Ferramentas expostas:
+
+list_projects
+
+index_project
+
+search_code
+
+Observações
+
+O projeto ignora diretórios comuns como .git, node_modules, .venv, dist, build
+
+Indexa arquivos de texto/código mais comuns
+
+O embedding é local via sentence-transformers
+
+
+---
+
+## 3) `docker-compose.yml`
+
+```yaml
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: repo-code-indexer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: code_indexer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+volumes:
+  pgdata:
+4) docker/init.sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS code_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    project_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    language TEXT,
+    content TEXT NOT NULL,
+    embedding VECTOR(384) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_project_name
+    ON code_chunks (project_name);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_file_path
+    ON code_chunks (file_path);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_embedding
+    ON code_chunks
+    USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+5) src/repo_code_indexer/__init__.py
+__all__ = []
+6) src/repo_code_indexer/config.py
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass(frozen=True)
+class Settings:
+    repo_root: Path
+    postgres_host: str
+    postgres_port: int
+    postgres_db: str
+    postgres_user: str
+    postgres_password: str
+    embedding_model: str
+
+    @property
+    def postgres_dsn(self) -> str:
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+
+def get_settings() -> Settings:
+    repo_root = Path(os.getenv("REPO_INDEXER_ROOT", ".")).expanduser().resolve()
+
+    return Settings(
+        repo_root=repo_root,
+        postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
+        postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
+        postgres_db=os.getenv("POSTGRES_DB", "code_indexer"),
+        postgres_user=os.getenv("POSTGRES_USER", "postgres"),
+        postgres_password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        embedding_model=os.getenv(
+            "EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        ),
+    )
+7) src/repo_code_indexer/projects.py
+from __future__ import annotations
+
+from pathlib import Path
+
+
+IGNORED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".idea",
+    ".vscode",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    ".cache",
+    "coverage",
+    ".pytest_cache",
+}
+
+
+def list_projects(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+
+    projects: list[Path] = []
+    for item in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if not item.is_dir():
+            continue
+        if item.name in IGNORED_DIRS:
+            continue
+        projects.append(item)
+    return projects
+
+
+def choose_project_interactive(projects: list[Path]) -> Path:
+    if not projects:
+        raise ValueError("Nenhum projeto encontrado.")
+
+    print("\nProjetos encontrados:\n")
+    for idx, project in enumerate(projects, start=1):
+        print(f"{idx:>2}. {project.name}")
+
+    while True:
+        raw = input("\nEscolha o número do projeto: ").strip()
+        if not raw.isdigit():
+            print("Digite um número válido.")
+            continue
+
+        choice = int(raw)
+        if 1 <= choice <= len(projects):
+            return projects[choice - 1]
+
+        print("Opção fora da faixa.")
+8) src/repo_code_indexer/index_flow.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from sentence_transformers import SentenceTransformer
+
+from repo_code_indexer.projects import IGNORED_DIRS
+
+
+SUPPORTED_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".rb", ".php",
+    ".cs", ".cpp", ".c", ".h", ".hpp", ".m", ".mm", ".swift", ".scala", ".lua", ".sh",
+    ".zsh", ".bash", ".sql", ".html", ".css", ".scss", ".json", ".yaml", ".yml", ".toml",
+    ".md", ".txt", ".xml",
+}
+
+
+@dataclass
+class CodeChunk:
+    project_name: str
+    file_path: str
+    chunk_index: int
+    language: str
+    content: str
+
+
+def detect_language(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext.startswith("."):
+        return ext[1:] or "text"
+    return "text"
+
+
+def iter_files(project_dir: Path) -> Iterable[Path]:
+    for path in project_dir.rglob("*"):
+        if not path.is_file():
+            continue
+
+        if any(part in IGNORED_DIRS for part in path.parts):
+            continue
+
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+
+        yield path
+
+
+def read_text_file(path: Path) -> str | None:
+    encodings = ("utf-8", "utf-8-sig", "latin-1")
+    for encoding in encodings:
+        try:
+            return path.read_text(encoding=encoding)
+        except Exception:
+            continue
+    return None
+
+
+def chunk_text(content: str, max_chars: int = 1600, overlap: int = 200) -> list[str]:
+    content = content.strip()
+    if not content:
+        return []
+
+    if len(content) <= max_chars:
+        return [content]
+
+    chunks: list[str] = []
+    start = 0
+    length = len(content)
+
+    while start < length:
+        end = min(start + max_chars, length)
+        chunk = content[start:end]
+
+        if end < length:
+            split_candidates = [
+                chunk.rfind("\nclass "),
+                chunk.rfind("\ndef "),
+                chunk.rfind("\nfunction "),
+                chunk.rfind("\nexport "),
+                chunk.rfind("\nconst "),
+                chunk.rfind("\nlet "),
+                chunk.rfind("\nvar "),
+                chunk.rfind("\n\n"),
+            ]
+            split_at = max(split_candidates)
+            if split_at > 200:
+                end = start + split_at
+                chunk = content[start:end]
+
+        chunks.append(chunk.strip())
+        if end >= length:
+            break
+        start = max(end - overlap, start + 1)
+
+    return [c for c in chunks if c]
+
+
+def build_chunks(project_dir: Path) -> list[CodeChunk]:
+    project_name = project_dir.name
+    result: list[CodeChunk] = []
+
+    for file_path in iter_files(project_dir):
+        raw = read_text_file(file_path)
+        if not raw:
+            continue
+
+        rel = file_path.relative_to(project_dir).as_posix()
+        language = detect_language(file_path)
+        pieces = chunk_text(raw)
+
+        for idx, piece in enumerate(pieces):
+            result.append(
+                CodeChunk(
+                    project_name=project_name,
+                    file_path=rel,
+                    chunk_index=idx,
+                    language=language,
+                    content=piece,
+                )
+            )
+
+    return result
+
+
+def embed_texts(model_name: str, texts: list[str]) -> list[list[float]]:
+    model = SentenceTransformer(model_name)
+    vectors = model.encode(texts, normalize_embeddings=True)
+    return [list(map(float, row)) for row in vectors]
+9) src/repo_code_indexer/search.py
+from __future__ import annotations
+
+from typing import Any
+
+import psycopg
+from pgvector.psycopg import register_vector
+from psycopg.rows import dict_row
+
+from repo_code_indexer.config import get_settings
+from repo_code_indexer.index_flow import embed_texts
+
+
+def get_connection():
+    settings = get_settings()
+    conn = psycopg.connect(settings.postgres_dsn, row_factory=dict_row)
+    register_vector(conn)
+    return conn
+
+
+def ensure_tables() -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS code_chunks (
+                    id BIGSERIAL PRIMARY KEY,
+                    project_name TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    language TEXT,
+                    content TEXT NOT NULL,
+                    embedding VECTOR(384) NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_code_chunks_project_name
+                    ON code_chunks (project_name);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_code_chunks_file_path
+                    ON code_chunks (file_path);
+                """
+            )
+            conn.commit()
+
+
+def delete_project_chunks(project_name: str) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM code_chunks WHERE project_name = %s",
+                (project_name,),
+            )
+            conn.commit()
+
+
+def insert_chunks(
+    project_name: str,
+    rows: list[tuple[str, int, str, str, list[float]]],
+) -> int:
+    ensure_tables()
+    delete_project_chunks(project_name)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO code_chunks
+                (project_name, file_path, chunk_index, language, content, embedding)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (project_name, file_path, chunk_index, language, content, embedding)
+                    for file_path, chunk_index, language, content, embedding in rows
+                ],
+            )
+            conn.commit()
+
+    return len(rows)
+
+
+def search_code(
+    project_name: str,
+    query: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    settings = get_settings()
+    query_vector = embed_texts(settings.embedding_model, [query])[0]
+
+    ensure_tables()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    project_name,
+                    file_path,
+                    chunk_index,
+                    language,
+                    content,
+                    1 - (embedding <=> %s::vector) AS score
+                FROM code_chunks
+                WHERE project_name = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_vector, project_name, query_vector, limit),
+            )
+            rows = cur.fetchall()
+
+    return list(rows)
+10) src/repo_code_indexer/cli.py
+from __future__ import annotations
+
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from repo_code_indexer.config import get_settings
+from repo_code_indexer.index_flow import build_chunks, embed_texts
+from repo_code_indexer.projects import choose_project_interactive, list_projects
+from repo_code_indexer.search import insert_chunks, search_code
+
+app = typer.Typer(help="Indexador semântico de repositórios")
+console = Console()
+
+
+@app.command()
+def projects() -> None:
+    settings = get_settings()
+    repos = list_projects(settings.repo_root)
+
+    if not repos:
+        console.print("[yellow]Nenhum projeto encontrado.[/yellow]")
+        return
+
+    table = Table(title=f"Projetos em {settings.repo_root}")
+    table.add_column("#", justify="right")
+    table.add_column("Projeto")
+
+    for idx, repo in enumerate(repos, start=1):
+        table.add_row(str(idx), repo.name)
+
+    console.print(table)
+
+
+@app.command()
+def index(project_name: str | None = None) -> None:
+    settings = get_settings()
+    repos = list_projects(settings.repo_root)
+
+    if not repos:
+        console.print("[red]Nenhum projeto encontrado.[/red]")
+        raise typer.Exit(code=1)
+
+    selected: Path
+    if project_name:
+        matches = [p for p in repos if p.name == project_name]
+        if not matches:
+            console.print(f"[red]Projeto não encontrado: {project_name}[/red]")
+            raise typer.Exit(code=1)
+        selected = matches[0]
+    else:
+        selected = choose_project_interactive(repos)
+
+    console.print(f"[cyan]Lendo projeto:[/cyan] {selected}")
+    chunks = build_chunks(selected)
+
+    if not chunks:
+        console.print("[yellow]Nenhum chunk gerado.[/yellow]")
+        return
+
+    texts = [c.content for c in chunks]
+    console.print(f"[cyan]Gerando embeddings de {len(texts)} chunks...[/cyan]")
+    vectors = embed_texts(settings.embedding_model, texts)
+
+    rows = []
+    for chunk, vector in zip(chunks, vectors, strict=True):
+        rows.append(
+            (
+                chunk.file_path,
+                chunk.chunk_index,
+                chunk.language,
+                chunk.content,
+                vector,
+            )
+        )
+
+    inserted = insert_chunks(selected.name, rows)
+    console.print(
+        f"[green]Indexação concluída.[/green] "
+        f"Projeto={selected.name} chunks={inserted}"
+    )
+
+
+@app.command()
+def query(
+    project_name: str,
+    text: str,
+    limit: int = 5,
+) -> None:
+    results = search_code(project_name, text, limit)
+
+    if not results:
+        console.print("[yellow]Nenhum resultado encontrado.[/yellow]")
+        return
+
+    for idx, row in enumerate(results, start=1):
+        console.rule(f"Resultado {idx} | score={row['score']:.4f}")
+        console.print(f"[bold]Arquivo:[/bold] {row['file_path']}")
+        console.print(f"[bold]Linguagem:[/bold] {row['language']}")
+        console.print(row["content"][:2000])
+
+
+if __name__ == "__main__":
+    app()
+11) src/repo_code_indexer/mcp_server.py
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from fastmcp import FastMCP
+
+from repo_code_indexer.config import get_settings
+from repo_code_indexer.index_flow import build_chunks, embed_texts
+from repo_code_indexer.projects import list_projects
+from repo_code_indexer.search import insert_chunks, search_code
+
+mcp = FastMCP("repo-code-indexer")
+
+
+def _resolve_root(root: str | None = None) -> Path:
+    env_root = os.getenv("REPO_INDEXER_ROOT")
+    if root:
+        return Path(root).expanduser().resolve()
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return get_settings().repo_root
+
+
+@mcp.tool
+def list_projects_tool(root: str | None = None) -> dict[str, Any]:
+    """
+    Lista projetos na pasta pai.
+    """
+    base = _resolve_root(root)
+    repos = list_projects(base)
+    return {
+        "root": str(base),
+        "projects": [repo.name for repo in repos],
+        "count": len(repos),
+    }
+
+
+@mcp.tool
+def index_project(project_name: str, root: str | None = None) -> dict[str, Any]:
+    """
+    Indexa um projeto específico.
+    """
+    settings = get_settings()
+    base = _resolve_root(root)
+    repos = list_projects(base)
+    target = next((p for p in repos if p.name == project_name), None)
+
+    if target is None:
+        return {
+            "ok": False,
+            "error": f"Projeto não encontrado: {project_name}",
+            "root": str(base),
+        }
+
+    chunks = build_chunks(target)
+    if not chunks:
+        return {
+            "ok": False,
+            "error": "Nenhum chunk gerado para indexação.",
+            "project_name": project_name,
+        }
+
+    texts = [c.content for c in chunks]
+    vectors = embed_texts(settings.embedding_model, texts)
+
+    rows = []
+    for chunk, vector in zip(chunks, vectors, strict=True):
+        rows.append(
+            (
+                chunk.file_path,
+                chunk.chunk_index,
+                chunk.language,
+                chunk.content,
+                vector,
+            )
+        )
+
+    inserted = insert_chunks(project_name, rows)
+    return {
+        "ok": True,
+        "project_name": project_name,
+        "chunks_indexed": inserted,
+    }
+
+
+@mcp.tool
+def search_code_tool(
+    project_name: str,
+    query: str,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """
+    Faz busca semântica dentro do projeto indexado.
+    """
+    results = search_code(project_name, query, limit=limit)
+    return {
+        "project_name": project_name,
+        "query": query,
+        "count": len(results),
+        "results": results,
+    }
+
+
+def run() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    run()
+12) examples/mcp-config.json
+{
+  "mcpServers": {
+    "repo-code-indexer": {
+      "command": "uv",
+      "args": ["run", "--directory", "/workspace/repo-code-indexer", "repo-indexer-mcp"],
+      "env": {
+        "REPO_INDEXER_ROOT": "/workspace",
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "code_indexer",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "postgres",
+        "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2"
+      }
+    }
+  }
+}
+13) .env de exemplo
+REPO_INDEXER_ROOT=/workspace
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=code_indexer
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+Como criar tudo rápido no Linux
+
+Na pasta onde você quer o projeto:
+
+mkdir -p repo-code-indexer/docker
+mkdir -p repo-code-indexer/examples
+mkdir -p repo-code-indexer/src/repo_code_indexer
+
+Depois salve cada arquivo no caminho correspondente.
+
+Como instalar e rodar
+
+Dentro da pasta repo-code-indexer:
+
+uv sync
+docker compose up -d
+
+Crie o .env e ajuste o caminho da pasta pai dos projetos.
+
+Depois:
+
+uv run repo-indexer projects
+uv run repo-indexer index
+uv run repo-indexer query meu-projeto "onde está a autenticação"
+uv run repo-indexer-mcp
+Observação importante
+
+Esse projeto está funcional e simples, mas ele não usa o CocoIndex real; ele usa:
+
+sentence-transformers para embedding
+
+Postgres + pgvector para busca vetorial
+
+FastMCP para o MCP
+
+Eu segui a tua ideia original de “selecionar projeto na pasta pai, indexar e expor via MCP”, mas com uma implementação mais direta e controlável.
+
+Se você quiser, no próximo passo eu te entrego a versão 2 com:
+
+suporte a Ollama embeddings
+
+filtros por extensão
+
+reindexação incremental por hash
+
+chunking melhor por linguagem

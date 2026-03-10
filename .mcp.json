@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "repo-code-indexer": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/alisson.pereira/workspace/code_index",
+        "repo-indexer-mcp"
+      ],
+      "env": {
+        "REPO_INDEXER_ROOT": "/home/alisson.pereira/workspace",
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "postgres",
+        "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2"
+      }
+    }
+  }
+}

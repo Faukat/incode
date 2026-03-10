@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/repo_code_indexer/__init__.py
+src/repo_code_indexer/cli.py
+src/repo_code_indexer/config.py
+src/repo_code_indexer/index_flow.py
+src/repo_code_indexer/mcp_server.py
+src/repo_code_indexer/projects.py
+src/repo_code_indexer/search.py
+src/repo_code_indexer/service.py
+src/repo_code_indexer.egg-info/PKG-INFO
+src/repo_code_indexer.egg-info/SOURCES.txt
+src/repo_code_indexer.egg-info/dependency_links.txt
+src/repo_code_indexer.egg-info/entry_points.txt
+src/repo_code_indexer.egg-info/requires.txt
+src/repo_code_indexer.egg-info/top_level.txt
