@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .tmp-state/
 *.egg-info/
+.bench-state/
+.bench-state-opt/
+.playwright-cli/
+benchmark-results-*.json
