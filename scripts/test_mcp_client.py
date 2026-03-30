@@ -9,19 +9,20 @@ from fastmcp.client import Client, StdioTransport
 async def main() -> None:
     transport = StdioTransport(
         command="uv",
-        args=["run", "--directory", r"D:\workspace_2\incode", "repo-indexer-mcp"],
+        args=["run", "--directory", r"D:\workspace_2\incode", "incode-mcp"],
         cwd=r"D:\workspace_2\incode",
         env={
             "REPO_INDEXER_ROOT": r"D:\workspace_2",
-            "POSTGRES_HOST": "localhost",
-            "POSTGRES_PORT": "5432",
-            "POSTGRES_DB": "code_indexer",
-            "POSTGRES_USER": "postgres",
-            "POSTGRES_PASSWORD": "postgres",
-            "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
+            "REPO_INDEXER_STATE_DIR": r"D:\workspace_2\.incode",
+            "AWS_REGION": "us-east-1",
+            "AWS_VECTOR_BUCKET_NAME": "incode-vectors",
+            "EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
+            "EMBEDDING_DIMENSIONS": "512",
+            "EMBEDDING_NORMALIZE": "true",
             "QUERY_MIN_SCORE": "0.10",
             "QUERY_FALLBACK_MIN_SCORE": "0.03",
-            "QUERY_CANDIDATE_MULTIPLIER": "5",
+            "QUERY_CANDIDATE_MULTIPLIER": "2",
+            "QUERY_EMBED_CACHE_SIZE": "256",
             "LEXICAL_DB_SCORE_WEIGHT": "0.25",
             "RESULT_PREVIEW_CHARS": "2000",
         },
@@ -48,3 +49,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

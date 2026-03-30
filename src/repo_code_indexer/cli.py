@@ -33,14 +33,21 @@ def setup() -> None:
     result = setup_service()
     console.print("[green]Servico pronto.[/green]")
     console.print(f"Raiz padrao: {result['repo_root']}")
-    console.print(f"Modelo: {result['embedding_model']}")
+    console.print(f"State dir: {result['state_dir']}")
+    console.print(f"AWS region: {result['aws_region']}")
+    console.print(f"Vector bucket: {result['vector_bucket_name']}")
+    console.print(
+        f"Embeddings: {result['embedding_model']} dims={result['embedding_dimensions']} normalize={result['embedding_normalize']}"
+    )
     console.print(
         f"Chunking: max={result['chunk_max_chars']} overlap={result['chunk_overlap']}"
     )
     console.print(f"Limite padrao de busca: {result['default_query_limit']}")
     console.print(f"Score minimo de busca: {result['query_min_score']}")
     console.print(f"Score minimo de fallback: {result['query_fallback_min_score']}")
-    console.print(f"Peso lexical do banco: {result['lexical_db_score_weight']}")
+    console.print(f"Cache de embedding de query: {result['query_embedding_cache_size']}")
+    console.print(f"Metric: {result['vector_distance_metric']}")
+    console.print(f"Peso lexical local: {result['lexical_db_score_weight']}")
 
 
 @app.command()
@@ -50,11 +57,16 @@ def config() -> None:
     table.add_column("Chave")
     table.add_column("Valor")
     table.add_row("REPO_INDEXER_ROOT", str(settings.repo_root))
-    table.add_row("POSTGRES_HOST", settings.postgres_host)
-    table.add_row("POSTGRES_PORT", str(settings.postgres_port))
-    table.add_row("POSTGRES_DB", settings.postgres_db)
-    table.add_row("POSTGRES_USER", settings.postgres_user)
+    table.add_row("REPO_INDEXER_STATE_DIR", str(settings.state_dir))
+    table.add_row("AWS_REGION", settings.aws_region)
+    table.add_row("AWS_VECTOR_BUCKET_NAME", settings.vector_bucket_name)
+    table.add_row("AWS_VECTOR_INDEX_PREFIX", settings.vector_index_prefix)
+    table.add_row("AWS_VECTOR_DISTANCE_METRIC", settings.vector_distance_metric)
+    table.add_row("AWS_VECTOR_PUT_BATCH_SIZE", str(settings.vector_put_batch_size))
     table.add_row("EMBEDDING_MODEL", settings.embedding_model)
+    table.add_row("EMBEDDING_DIMENSIONS", str(settings.embedding_dimensions))
+    table.add_row("EMBEDDING_NORMALIZE", str(settings.embedding_normalize))
+    table.add_row("EMBEDDING_MAX_WORKERS", str(settings.embedding_max_workers))
     table.add_row("CHUNK_MAX_CHARS", str(settings.chunk_max_chars))
     table.add_row("CHUNK_OVERLAP", str(settings.chunk_overlap))
     table.add_row("QUERY_LIMIT", str(settings.default_query_limit))
@@ -63,6 +75,7 @@ def config() -> None:
     table.add_row(
         "QUERY_CANDIDATE_MULTIPLIER", str(settings.query_candidate_multiplier)
     )
+    table.add_row("QUERY_EMBED_CACHE_SIZE", str(settings.query_embedding_cache_size))
     table.add_row("LEXICAL_DB_SCORE_WEIGHT", str(settings.lexical_db_score_weight))
     table.add_row("RESULT_PREVIEW_CHARS", str(settings.result_preview_chars))
     console.print(table)
@@ -141,7 +154,7 @@ def projects() -> None:
     if not projects:
         console.print("[yellow]Nenhum projeto registrado.[/yellow]")
         console.print(
-            "Use `uv run repo-indexer add-project` ou `uv run repo-indexer discover --register`."
+            "Use `uv run incode add-project` ou `uv run incode discover --register`."
         )
         return
 
@@ -261,7 +274,7 @@ def query(
             )
         if "semantic_score" in row and "lexical_score" in row:
             console.print(
-                f"[bold]Score semantico:[/bold] {row['semantic_score']:.4f} | [bold]FTS:[/bold] {row.get('lexical_db_score', 0.0):.4f} | [bold]Bonus lexical:[/bold] {row['lexical_score']:.4f}"
+                f"[bold]Score semantico:[/bold] {row['semantic_score']:.4f} | [bold]Bonus lexical:[/bold] {row['lexical_score']:.4f}"
             )
         console.print(
             _safe_console_text(row["content"][: settings.result_preview_chars])
@@ -270,3 +283,4 @@ def query(
 
 if __name__ == "__main__":
     app()
+

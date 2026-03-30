@@ -13,4 +13,5 @@ COPY examples /app/examples
 RUN python -m pip install --no-cache-dir --upgrade pip && \
     python -m pip install --no-cache-dir -e .
 
-CMD ["repo-indexer", "projects"]
+CMD ["incode", "projects"]
+

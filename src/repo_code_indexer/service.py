@@ -35,13 +35,20 @@ def setup_service() -> dict[str, Any]:
     return {
         "ok": True,
         "repo_root": str(settings.repo_root),
+        "state_dir": str(settings.state_dir),
+        "aws_region": settings.aws_region,
+        "vector_bucket_name": settings.vector_bucket_name,
+        "vector_distance_metric": settings.vector_distance_metric,
         "embedding_model": settings.embedding_model,
+        "embedding_dimensions": settings.embedding_dimensions,
+        "embedding_normalize": settings.embedding_normalize,
         "chunk_max_chars": settings.chunk_max_chars,
         "chunk_overlap": settings.chunk_overlap,
         "default_query_limit": settings.default_query_limit,
         "query_min_score": settings.query_min_score,
         "query_fallback_min_score": settings.query_fallback_min_score,
         "query_candidate_multiplier": settings.query_candidate_multiplier,
+        "query_embedding_cache_size": settings.query_embedding_cache_size,
         "lexical_db_score_weight": settings.lexical_db_score_weight,
     }
 
@@ -134,7 +141,8 @@ def remove_project_service(
     deleted = search.delete_registered_project(project_name)
     chunks_deleted = 0
     if delete_chunks:
-        chunks_deleted = search.delete_project_chunks(project_name)
+        search.delete_project_chunks(project_name)
+        chunks_deleted = int(existing.get("last_indexed_chunk_count") or 0)
 
     return {
         "ok": deleted,

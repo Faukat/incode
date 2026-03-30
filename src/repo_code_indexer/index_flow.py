@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from sentence_transformers import SentenceTransformer
+import boto3
+from botocore.config import Config as BotoConfig
 
+from repo_code_indexer.config import get_settings
 from repo_code_indexer.projects import IGNORED_DIRS
 
 
@@ -468,26 +472,58 @@ def build_chunks(
     return result
 
 
-_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+_BEDROCK_CACHE: dict[tuple[str, str], object] = {}
 _MODEL_LOCK = threading.Lock()
 
 
-def _get_model(model_name: str) -> SentenceTransformer:
+def _get_model(model_name: str):
+    settings = get_settings()
+    cache_key = (settings.aws_region, model_name)
     with _MODEL_LOCK:
-        model = _MODEL_CACHE.get(model_name)
-        if model is None:
-            model = SentenceTransformer(model_name)
-            _MODEL_CACHE[model_name] = model
-        return model
+        client = _BEDROCK_CACHE.get(cache_key)
+        if client is None:
+            client = boto3.client(
+                "bedrock-runtime",
+                region_name=settings.aws_region,
+                config=BotoConfig(
+                    retries={"max_attempts": 10, "mode": "adaptive"},
+                    read_timeout=120,
+                    connect_timeout=10,
+                ),
+            )
+            _BEDROCK_CACHE[cache_key] = client
+        return client
+
+
+def _embed_text(model_name: str, text: str) -> list[float]:
+    settings = get_settings()
+    body = {
+        "inputText": text,
+        "dimensions": settings.embedding_dimensions,
+        "normalize": settings.embedding_normalize,
+    }
+    response = _get_model(model_name).invoke_model(
+        modelId=model_name,
+        body=json.dumps(body),
+    )
+    payload = json.loads(response["body"].read())
+    embedding = payload.get("embedding")
+    if embedding is None:
+        embedding = payload.get("embeddingsByType", {}).get("float", [])
+    return [float(value) for value in embedding]
 
 
 def embed_texts(model_name: str, texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
-    model = _get_model(model_name)
-    vectors = model.encode(texts, normalize_embeddings=True)
-    return [list(map(float, row)) for row in vectors]
+    settings = get_settings()
+    worker_count = max(1, min(settings.embedding_max_workers, len(texts)))
+    if worker_count == 1:
+        return [_embed_text(model_name, text) for text in texts]
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(lambda text: _embed_text(model_name, text), texts))
 
 
 def warm_embedding_model(model_name: str) -> None:

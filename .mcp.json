@@ -1,22 +1,25 @@
 {
   "mcpServers": {
-    "repo-code-indexer": {
+    "incode": {
       "command": "uv",
       "args": [
         "run",
         "--directory",
-        "/home/alisson.pereira/workspace/code_index",
-        "repo-indexer-mcp"
+        "/home/alisson.pereira/workspace/incode",
+        "incode-mcp"
       ],
       "env": {
         "REPO_INDEXER_ROOT": "/home/alisson.pereira/workspace",
-        "POSTGRES_HOST": "localhost",
-        "POSTGRES_PORT": "5432",
-        "POSTGRES_DB": "postgres",
-        "POSTGRES_USER": "postgres",
-        "POSTGRES_PASSWORD": "postgres",
-        "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2"
+        "REPO_INDEXER_STATE_DIR": "/home/alisson.pereira/.incode",
+        "AWS_REGION": "us-east-1",
+        "AWS_VECTOR_BUCKET_NAME": "incode-vectors",
+        "EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
+        "EMBEDDING_DIMENSIONS": "512",
+        "EMBEDDING_NORMALIZE": "true",
+        "QUERY_CANDIDATE_MULTIPLIER": "2",
+        "QUERY_EMBED_CACHE_SIZE": "256"
       }
     }
   }
 }
+
